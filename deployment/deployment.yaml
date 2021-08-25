@@ -1,0 +1,100 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: APP_NAME-storage
+  namespace: DC_NAMESPACE
+spec:
+  storageClassName: cinder-nvme
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: APP_NAME
+  namespace: DC_NAMESPACE
+spec:
+  selector:
+    matchLabels:
+      app: APP_NAME
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: APP_NAME
+    spec:
+      containers:
+      - name: APP_NAME
+        image: abi-docker-local.artifactory-espoo1.int.net.nokia.com/abi/openstreetmap:IMAGE_TAG
+        args: ["run"]
+        ports:
+          - containerPort: 80
+            name: "osm"
+        volumeMounts:
+        - mountPath: /var/lib/mod_tile
+          name: osm-storage
+
+        resources:
+          requests:
+            memory: 16Gi
+            cpu: 4
+          limits:
+            memory: 16Gi
+            cpu: 4
+        env:
+          - name: PGUSER
+            value: "user1name"
+          - name: PGHOST
+            value: "postgis"
+          - name: PGPASS
+            value: "pass1word"
+          - name: PGPORT
+            value: "5432"
+      volumes:
+        - name: osm-storage
+          persistentVolumeClaim:
+            claimName: APP_NAME-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: APP_NAME-svc
+  namespace: DC_NAMESPACE
+spec:
+  ports:
+  - name: osm
+    port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: APP_NAME
+  type: LoadBalancer
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: APP_NAME-ingress
+  namespace: DC_NAMESPACE
+  annotations:
+    kubernetes.io/ingress.class: nginx
+
+spec:
+  rules:
+  - host: DC_NAMESPACE.DNS
+    http:
+      paths:
+      - path: /
+        backend:
+          serviceName: APP_NAME-svc
+          servicePort: 80
+  tls:
+  - hosts:
+    - DC_NAMESPACE.DNS
+    secretName: abi-tls
+
+

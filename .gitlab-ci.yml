@@ -1,0 +1,98 @@
+image: "abi-docker-local.artifactory-espoo1.int.net.nokia.com/abi/apf:0.0.7"
+services:
+  - docker:stable-dind
+
+variables:
+  # ------------- Mandatory Variables for DinD -------------
+  # When using dind service we need to instruct docker, to talk with the
+  # daemon started inside of the service. The daemon is available with
+  # a network connection instead of the default /var/run/docker.sock socket.
+  #
+  # The 'docker' hostname is the alias of the service container as described at
+  # https://docs.gitlab.com/ee/ci/docker/using_docker_images.html#accessing-the-services
+  #
+  # Note that if you're using the Kubernetes executor, the variable should be set to
+  # tcp://localhost:2375 because of how the Kubernetes executor connects services
+  # to the job container
+  DOCKER_HOST: tcp://localhost:2375
+  # For non-Kubernetes executors, we use tcp://docker:2375
+  # DOCKER_HOST: tcp://docker:2375
+  #
+  # This will instruct Docker not to start over TLS.
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_DRIVER: overlay2
+
+.common:
+  tags:
+    - &GIT_RUNNER nesc-asia
+
+stages:
+  - route-cluster
+  - build
+  - deploy
+
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+route-cluster:
+  tags:
+    - *GIT_RUNNER
+  stage: route-cluster
+  image: python:3.8.0
+  before_script:
+    - apt update && apt install git -y
+  script:
+    - git clone https://oauth2:X71MnYsRJF5fS9zxSVBf@gitlabe2.ext.net.nokia.com/ABI/platform/kubeconfig.git
+    - mv set_cluster.py kubeconfig/
+    - cd kubeconfig && python set_cluster.py
+    - mv config ..
+  artifacts:
+    paths:
+      - config
+  only:
+    - master
+    - staging
+
+build-image:
+  tags:
+    - *GIT_RUNNER
+  stage: build
+  variables:
+    LOCAL_IMAGE: docker-registry-remote.esisoj70.emea.nsn-net.net/ubuntu:latest
+    REGISTRY_IMAGE: abi-docker-local.artifactory-espoo1.int.net.nokia.com/abi/openstreetmap:$CI_DATA_CENTER.$CI_PIPELINE_ID
+  script:
+    - docker login --username $DOCKER_USER --password $DOCKER_PASSWORD $DOCKER_REGISTRY
+    - docker info
+    - docker build -t $LOCAL_IMAGE -f Dockerfile .
+      && docker tag $LOCAL_IMAGE $REGISTRY_IMAGE
+      && docker push $REGISTRY_IMAGE
+  only:
+    - master
+    - staging
+
+  allow_failure: true
+
+deploy-asia-staging:
+    tags:
+      - *GIT_RUNNER
+    stage: deploy
+    image: ava-docker-local.esisoj70.emea.nsn-net.net/ava/customers/dtzar/helm-kubectl
+    variables:
+      APP_NAME: $CI_APP_NAME
+      KUBECONFIG: config
+      DNS: $CI_DNS
+      IMAGE_TAG: $CI_DATA_CENTER.$CI_PIPELINE_ID
+      DC_NAMESPACE: $CI_NAMESPACE
+    environment:
+      name: $CI_DATA_CENTER-$CI_NAMESPACE
+      url: https://$CI_NAMESPACE.$CI_DNS
+    script:
+      - sed -i "s/IMAGE_TAG/$IMAGE_TAG/g" deployment/deployment.yaml
+      - sed -i "s/DNS/$DNS/g" deployment/deployment.yaml
+      - sed -i "s/APP_NAME/$APP_NAME/g" deployment/deployment.yaml
+      - sed -i "s/DC_NAMESPACE/$DC_NAMESPACE/g" deployment/deployment.yaml
+      - cat deployment/deployment.yaml
+      - kubectl apply -f deployment/deployment.yaml
+    only:
+      - master
+      - staging
